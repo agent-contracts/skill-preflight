@@ -1,5 +1,7 @@
 # SkillPreflight
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 SkillPreflight is a pre-install safety, token, and maintainability scorecard for AI agent skills.
 
 It helps users decide whether a Codex, Claude Code, Cursor, Gemini CLI, or other agent skill is safe and lightweight enough to install.
