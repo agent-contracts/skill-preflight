@@ -45,6 +45,7 @@ export interface ScannedFile {
   absolutePath: string;
   bytes: number;
   isText: boolean;
+  readError?: string;
 }
 
 export interface ScanMetrics {

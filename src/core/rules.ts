@@ -545,6 +545,19 @@ function reliabilityRule(): Rule {
     run(context) {
       const findings: Finding[] = [];
 
+      for (const file of context.files.filter((candidate) => candidate.readError)) {
+        findings.push({
+          id: "reliability.unreadable-file",
+          category: "reliability",
+          severity: "medium",
+          title: "File could not be read",
+          description: `The file could not be read (${file.readError}) and was excluded from text analysis.`,
+          recommendation: "Inspect the file manually and check filesystem permissions or security software before installing the skill.",
+          scoreImpact: 4,
+          file: file.path
+        });
+      }
+
       if (!context.metrics.hasExamples) {
         findings.push({
           id: "reliability.missing-examples",

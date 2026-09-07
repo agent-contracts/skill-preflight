@@ -84,6 +84,7 @@ Environment references such as `${API_KEY}`, `$env:API_KEY`, `$API_KEY`, and `%A
 - `maintainability.missing-frontmatter`: missing skill metadata frontmatter.
 - `reliability.missing-examples`: missing examples.
 - `reliability.missing-tests`: missing tests, fixtures, or evals.
+- `reliability.unreadable-file`: files blocked or removed before their contents could be analyzed.
 - `reliability.vague-instructions`: vague operational language.
 
 ## Compatibility

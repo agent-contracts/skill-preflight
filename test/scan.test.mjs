@@ -6,8 +6,9 @@ import { describe, it } from "node:test";
 import path from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
-import { parseGitHubUrl, readSkillFiles } from "../dist/core/filesystem.js";
+import { cloneGitRepository, parseGitHubUrl, readSkillFiles } from "../dist/core/filesystem.js";
 import { loadConfig } from "../dist/core/policy.js";
+import { rules } from "../dist/core/rules.js";
 import { scan, scanSkillRoot } from "../dist/core/scan.js";
 import { scoreFindings } from "../dist/core/scoring.js";
 import { parseFormat, renderReport } from "../dist/report/render.js";
@@ -76,6 +77,35 @@ describe("SkillPreflight scanner", () => {
       undefined
     );
     assert.equal(parseGitHubUrl("https://github.com/agent-contracts/skill-preflight/issues"), undefined);
+  });
+
+  it("clones an exact commit SHA without treating it as a branch", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "skill-preflight-git-ref-"));
+    const source = path.join(tempRoot, "source");
+    const destination = path.join(tempRoot, "checkout");
+
+    try {
+      await mkdir(source, { recursive: true });
+      await execFileAsync("git", ["init", "--quiet", source]);
+      await execFileAsync("git", ["-C", source, "config", "user.name", "SkillPreflight Test"]);
+      await execFileAsync("git", ["-C", source, "config", "user.email", "test@skill-preflight.invalid"]);
+      await writeFile(path.join(source, "SKILL.md"), "---\nname: first\ndescription: First revision\n---\n", "utf8");
+      await execFileAsync("git", ["-C", source, "add", "SKILL.md"]);
+      await execFileAsync("git", ["-C", source, "commit", "--quiet", "-m", "First revision"]);
+      const firstCommit = (await execFileAsync("git", ["-C", source, "rev-parse", "HEAD"])).stdout.trim();
+
+      await writeFile(path.join(source, "SKILL.md"), "---\nname: second\ndescription: Second revision\n---\n", "utf8");
+      await execFileAsync("git", ["-C", source, "commit", "--quiet", "-am", "Second revision"]);
+
+      await cloneGitRepository(source, firstCommit, destination);
+
+      const checkedOutCommit = (await execFileAsync("git", ["-C", destination, "rev-parse", "HEAD"])).stdout.trim();
+      const skillSource = await readFile(path.join(destination, "SKILL.md"), "utf8");
+      assert.equal(checkedOutCommit, firstCommit);
+      assert.match(skillSource, /name: first/);
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
   });
 
   it("scores a restrained skill highly", async () => {
@@ -388,6 +418,47 @@ describe("SkillPreflight scanner", () => {
     } finally {
       await rm(tempRoot, { recursive: true, force: true });
     }
+  });
+
+  it("reports files that could not be read as partial scan findings", () => {
+    const findings = rules.flatMap((rule) =>
+      rule.run({
+        rootPath: "skill",
+        skillName: "partial-scan",
+        files: [
+          {
+            path: "references/quarantined.md",
+            absolutePath: "references/quarantined.md",
+            bytes: 512,
+            isText: false,
+            readError: "UNKNOWN"
+          }
+        ],
+        textFiles: [],
+        metrics: {
+          totalFiles: 1,
+          totalBytes: 512,
+          textFiles: 0,
+          scriptFiles: 0,
+          dependencyFiles: 0,
+          referenceFiles: 1,
+          assetFiles: 0,
+          skillMdBytes: 0,
+          skillMdLines: 0,
+          estimatedActivationTokens: 0,
+          hasSkillMd: false,
+          hasReadme: false,
+          hasLicense: false,
+          hasExamples: false,
+          hasTests: false
+        }
+      })
+    );
+    const finding = findings.find((candidate) => candidate.id === "reliability.unreadable-file");
+
+    assert.equal(finding?.severity, "medium");
+    assert.equal(finding?.file, "references/quarantined.md");
+    assert.match(finding?.description ?? "", /UNKNOWN/);
   });
 
   it("fails the CLI on a configured severity threshold", async () => {

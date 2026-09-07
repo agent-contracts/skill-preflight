@@ -58,16 +58,11 @@ export async function resolveTarget(target: string, keepTemp = false): Promise<R
         await removeTempPath(tempRoot);
 
         try {
-          const cloneArgs = ["clone", "--depth", "1"];
-          if (githubRepo.ref) {
-            cloneArgs.push("--branch", githubRepo.ref, "--single-branch");
-          }
-          cloneArgs.push(`https://github.com/${githubRepo.owner}/${githubRepo.repo}.git`, tempRoot);
-
-          await execFileAsync("git", cloneArgs, {
-            timeout: 120000,
-            windowsHide: true
-          });
+          await cloneGitRepository(
+            `https://github.com/${githubRepo.owner}/${githubRepo.repo}.git`,
+            githubRepo.ref,
+            tempRoot
+          );
         } catch (gitError) {
           failures.push(`git clone fallback failed: ${formatToolError(gitError)}`);
           await removeTempPath(tempRoot).catch(() => undefined);
@@ -109,6 +104,32 @@ export async function resolveTarget(target: string, keepTemp = false): Promise<R
     displayTarget: target,
     localPath
   };
+}
+
+export async function cloneGitRepository(
+  repositoryUrl: string,
+  ref: string | undefined,
+  destination: string
+): Promise<void> {
+  const options = {
+    timeout: 120000,
+    windowsHide: true
+  };
+
+  if (ref && /^[0-9a-f]{40}$/i.test(ref)) {
+    await execFileAsync("git", ["init", "--quiet", destination], options);
+    await execFileAsync("git", ["-C", destination, "remote", "add", "origin", repositoryUrl], options);
+    await execFileAsync("git", ["-C", destination, "fetch", "--depth", "1", "--no-tags", "origin", ref], options);
+    await execFileAsync("git", ["-C", destination, "checkout", "--quiet", "--detach", "FETCH_HEAD"], options);
+    return;
+  }
+
+  const cloneArgs = ["clone", "--depth", "1"];
+  if (ref) {
+    cloneArgs.push("--branch", ref, "--single-branch");
+  }
+  cloneArgs.push(repositoryUrl, destination);
+  await execFileAsync("git", cloneArgs, options);
 }
 
 export function isGitHubUrl(value: string): boolean {
@@ -199,8 +220,21 @@ export async function readSkillFiles(rootPath: string, options: ReadSkillFilesOp
   const textFiles: TextFile[] = [];
 
   await walk(rootPath, async (absolutePath) => {
-    const metadata = await stat(absolutePath);
     const relativePath = toPosixPath(path.relative(rootPath, absolutePath));
+    let metadata;
+
+    try {
+      metadata = await stat(absolutePath);
+    } catch (error) {
+      files.push({
+        path: relativePath,
+        absolutePath,
+        bytes: 0,
+        isText: false,
+        readError: filesystemErrorCode(error)
+      });
+      return;
+    }
 
     if (metadata.size > MAX_TEXT_FILE_BYTES) {
       files.push({
@@ -212,7 +246,19 @@ export async function readSkillFiles(rootPath: string, options: ReadSkillFilesOp
       return;
     }
 
-    const buffer = await readFile(absolutePath);
+    let buffer: Buffer;
+    try {
+      buffer = await readFile(absolutePath);
+    } catch (error) {
+      files.push({
+        path: relativePath,
+        absolutePath,
+        bytes: metadata.size,
+        isText: false,
+        readError: filesystemErrorCode(error)
+      });
+      return;
+    }
     const isText = isProbablyText(buffer);
 
     files.push({
@@ -600,6 +646,13 @@ async function removeTempPath(targetPath: string): Promise<void> {
     maxRetries: 5,
     retryDelay: 200
   });
+}
+
+function filesystemErrorCode(error: unknown): string {
+  if (error && typeof error === "object" && "code" in error && typeof error.code === "string") {
+    return error.code;
+  }
+  return "UNKNOWN";
 }
 
 function getProxyDispatcher(): Promise<ProxyAgent | undefined> {
