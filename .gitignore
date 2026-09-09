@@ -8,3 +8,6 @@ coverage/
 skill-preflight-report.*
 *.sarif
 *.tgz
+
+# Local-only outreach, planning, and working notes.
+.private/
