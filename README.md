@@ -59,6 +59,8 @@ Scan common local skill directories:
 npx skill-preflight scan --installed
 ```
 
+Installed discovery covers user and workspace roots for the shared Agent Skills convention plus Codex, Claude Code, Cursor, and Gemini CLI: `.agents/skills`, `.codex/skills`, `.claude/skills`, `.cursor/skills`, and `.gemini/skills`. Linked skill directories are supported on Windows, macOS, and Linux.
+
 For repositories containing many skills, show a compact list of the 20 lowest-scoring skills:
 
 ```bash

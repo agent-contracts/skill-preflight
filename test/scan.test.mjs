@@ -1,12 +1,18 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import { describe, it } from "node:test";
 import path from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
-import { cloneGitRepository, parseGitHubUrl, readSkillFiles } from "../dist/core/filesystem.js";
+import {
+  cloneGitRepository,
+  commonInstalledSkillDirs,
+  discoverSkillRoots,
+  parseGitHubUrl,
+  readSkillFiles
+} from "../dist/core/filesystem.js";
 import { loadConfig } from "../dist/core/policy.js";
 import { rules } from "../dist/core/rules.js";
 import { scan, scanSkillRoot } from "../dist/core/scan.js";
@@ -77,6 +83,72 @@ describe("SkillPreflight scanner", () => {
       undefined
     );
     assert.equal(parseGitHubUrl("https://github.com/agent-contracts/skill-preflight/issues"), undefined);
+  });
+
+  it("includes shared, Codex, Claude, Cursor, and Gemini installed skill directories", () => {
+    const home = path.resolve("test-home");
+    const workspace = path.resolve("test-workspace");
+
+    assert.deepEqual(commonInstalledSkillDirs(home, workspace), [
+      path.join(home, ".agents", "skills"),
+      path.join(home, ".codex", "skills"),
+      path.join(home, ".claude", "skills"),
+      path.join(home, ".cursor", "skills"),
+      path.join(home, ".gemini", "skills"),
+      path.join(workspace, ".agents", "skills"),
+      path.join(workspace, ".codex", "skills"),
+      path.join(workspace, ".claude", "skills"),
+      path.join(workspace, ".cursor", "skills"),
+      path.join(workspace, ".gemini", "skills")
+    ]);
+  });
+
+  it("discovers skills installed through directory links", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "skill-preflight-linked-skill-"));
+    const sourceRoot = path.join(tempRoot, "source", "linked-skill");
+    const installedRoot = path.join(tempRoot, ".gemini", "skills");
+    const linkedRoot = path.join(installedRoot, "linked-skill");
+
+    try {
+      await mkdir(sourceRoot, { recursive: true });
+      await mkdir(installedRoot, { recursive: true });
+      await writeFile(
+        path.join(sourceRoot, "SKILL.md"),
+        "---\nname: linked-skill\ndescription: Linked test skill\n---\nReview text only.\n",
+        "utf8"
+      );
+      await symlink(sourceRoot, linkedRoot, process.platform === "win32" ? "junction" : "dir");
+
+      assert.deepEqual(await discoverSkillRoots(installedRoot), [linkedRoot]);
+
+      const report = await scan({ target: installedRoot });
+      assert.equal(report.summary.count, 1);
+      assert.equal(report.reports[0].skillName, "linked-skill");
+      assert.equal(report.reports[0].displayPath, "linked-skill");
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("does not traverse a directory link that is not itself a skill", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "skill-preflight-linked-parent-"));
+    const installedRoot = path.join(tempRoot, "installed");
+    const unrelatedSkill = path.join(tempRoot, "unrelated", "skill");
+
+    try {
+      await mkdir(installedRoot, { recursive: true });
+      await mkdir(unrelatedSkill, { recursive: true });
+      await writeFile(
+        path.join(unrelatedSkill, "SKILL.md"),
+        "---\nname: unrelated\ndescription: Must not be discovered through a parent link\n---\n",
+        "utf8"
+      );
+      await symlink(tempRoot, path.join(installedRoot, "parent-link"), process.platform === "win32" ? "junction" : "dir");
+
+      assert.deepEqual(await discoverSkillRoots(installedRoot), []);
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
   });
 
   it("clones an exact commit SHA without treating it as a branch", async () => {

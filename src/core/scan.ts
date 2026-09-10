@@ -24,6 +24,9 @@ export async function scan(options: ScanOptions): Promise<ScanReport> {
     try {
       const roots = await discoverSkillRoots(resolved.localPath, exclude);
       if (roots.length === 0) {
+        if (options.installed) {
+          continue;
+        }
         const suffix = exclude.length > 0 ? " after applying exclusions" : "";
         throw new Error(`No SKILL.md files found under ${target}${suffix}`);
       }
@@ -44,6 +47,10 @@ export async function scan(options: ScanOptions): Promise<ScanReport> {
     } finally {
       await resolved.cleanup?.();
     }
+  }
+
+  if (options.installed && reports.length === 0) {
+    throw new Error("No SKILL.md files were found in common installed skill directories.");
   }
 
   return {

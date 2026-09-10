@@ -1,4 +1,4 @@
-import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -202,7 +202,7 @@ export async function discoverSkillRoots(rootPath: string, exclude: string[] = [
     if (path.basename(filePath).toLowerCase() === "skill.md") {
       roots.push(path.dirname(filePath));
     }
-  }, { basePath: rootPath, exclude });
+  }, { basePath: rootPath, exclude, followDirectorySymlinks: true });
 
   return [...new Set(roots)].sort();
 }
@@ -289,13 +289,21 @@ export async function readSkillFiles(rootPath: string, options: ReadSkillFilesOp
 interface WalkOptions {
   basePath: string;
   exclude: string[];
+  followDirectorySymlinks?: boolean;
 }
 
 async function walk(
   rootPath: string,
   onFile: (filePath: string) => Promise<void>,
-  options: WalkOptions = { basePath: rootPath, exclude: [] }
+  options: WalkOptions = { basePath: rootPath, exclude: [] },
+  visitedDirectories = new Set<string>()
 ): Promise<void> {
+  const directoryIdentity = await realpath(rootPath).catch(() => path.resolve(rootPath));
+  if (visitedDirectories.has(directoryIdentity)) {
+    return;
+  }
+  visitedDirectories.add(directoryIdentity);
+
   const entries = await readdir(rootPath, { withFileTypes: true });
 
   for (const entry of entries) {
@@ -304,27 +312,52 @@ async function walk(
 
     if (entry.isDirectory()) {
       if (!IGNORED_DIRS.has(entry.name) && !isPathExcluded(relativePath, options.exclude, true)) {
-        await walk(absolutePath, onFile, options);
+        await walk(absolutePath, onFile, options, visitedDirectories);
       }
       continue;
     }
 
     if (entry.isFile() && !isPathExcluded(relativePath, options.exclude)) {
       await onFile(absolutePath);
+      continue;
+    }
+
+    if (entry.isSymbolicLink() && options.followDirectorySymlinks) {
+      const linkedMetadata = await stat(absolutePath).catch(() => undefined);
+      if (!linkedMetadata) {
+        continue;
+      }
+
+      if (
+        linkedMetadata.isDirectory() &&
+        !IGNORED_DIRS.has(entry.name) &&
+        !isPathExcluded(relativePath, options.exclude, true)
+      ) {
+        const linkedSkillFile = await stat(path.join(absolutePath, "SKILL.md")).catch(() => undefined);
+        if (!linkedSkillFile?.isFile()) {
+          continue;
+        }
+
+        await walk(
+          absolutePath,
+          onFile,
+          { ...options, followDirectorySymlinks: false },
+          visitedDirectories
+        );
+      } else if (linkedMetadata.isFile() && !isPathExcluded(relativePath, options.exclude)) {
+        await onFile(absolutePath);
+      }
     }
   }
 }
 
-export function commonInstalledSkillDirs(): string[] {
-  const home = os.homedir();
-  const cwd = process.cwd();
+export function commonInstalledSkillDirs(home = os.homedir(), cwd = process.cwd()): string[] {
+  const clientDirectories = [".agents", ".codex", ".claude", ".cursor", ".gemini"];
+  const candidates = [home, cwd].flatMap((basePath) =>
+    clientDirectories.map((clientDirectory) => path.join(basePath, clientDirectory, "skills"))
+  );
 
-  return [
-    path.join(home, ".codex", "skills"),
-    path.join(home, ".claude", "skills"),
-    path.join(cwd, ".codex", "skills"),
-    path.join(cwd, ".claude", "skills")
-  ];
+  return [...new Set(candidates.map((candidate) => path.resolve(candidate)))];
 }
 
 interface GitHubTreeEntry {

@@ -74,6 +74,8 @@ npx skill-preflight scan https://github.com/user/skills/blob/main/skills/my-skil
 npx skill-preflight scan --installed
 ```
 
+安装目录发现会同时检查用户级和工作区级的共享 Agent Skills 目录，以及 Codex、Claude Code、Cursor、Gemini CLI 目录：`.agents/skills`、`.codex/skills`、`.claude/skills`、`.cursor/skills`、`.gemini/skills`。Windows、macOS 和 Linux 上通过链接方式安装的 Skill 也可以被识别。
+
 如果仓库包含大量 Skill，可以只查看总览和分数最低的 20 项：
 
 ```bash
