@@ -1,7 +1,7 @@
-import { mkdir, readdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
+import { mkdir, mkdtemp, open, readdir, realpath, rm, stat, writeFile, type FileHandle } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import * as tar from "tar";
@@ -46,7 +46,8 @@ class GitHubResourceLimitError extends Error {
 export async function resolveTarget(target: string, keepTemp = false): Promise<ResolvedTarget> {
   const githubRepo = parseGitHubUrl(target);
   if (githubRepo) {
-    const tempRoot = path.join(os.tmpdir(), `skill-preflight-${randomUUID()}`);
+    const tempParent = await mkdtemp(path.join(os.tmpdir(), "skill-preflight-"));
+    const tempRoot = path.join(tempParent, "repository");
     await mkdir(tempRoot, { recursive: true });
 
     const failures: string[] = [];
@@ -59,6 +60,7 @@ export async function resolveTarget(target: string, keepTemp = false): Promise<R
       await removeTempPath(tempRoot);
 
       if (sparseError instanceof GitHubResourceLimitError) {
+        await removeTempPath(tempParent).catch(() => undefined);
         throw new Error(
           [
             `Could not safely load GitHub repository: ${target}`,
@@ -78,6 +80,7 @@ export async function resolveTarget(target: string, keepTemp = false): Promise<R
         await removeTempPath(tempRoot);
 
         if (tarballError instanceof GitHubResourceLimitError) {
+          await removeTempPath(tempParent).catch(() => undefined);
           throw new Error(
             [
               `Could not safely load GitHub repository: ${target}`,
@@ -95,7 +98,7 @@ export async function resolveTarget(target: string, keepTemp = false): Promise<R
           );
         } catch (gitError) {
           failures.push(`git clone fallback failed: ${formatToolError(gitError)}`);
-          await removeTempPath(tempRoot).catch(() => undefined);
+          await removeTempPath(tempParent).catch(() => undefined);
           throw new Error(
             [
               `Could not load GitHub repository: ${target}`,
@@ -109,7 +112,7 @@ export async function resolveTarget(target: string, keepTemp = false): Promise<R
 
     const localPath = githubRepo.subpath ? resolveInside(tempRoot, githubRepo.subpath) : tempRoot;
     if (!(await pathExists(localPath))) {
-      await removeTempPath(tempRoot).catch(() => undefined);
+      await removeTempPath(tempParent).catch(() => undefined);
       const refLabel = githubRepo.ref ? ` at ref ${githubRepo.ref}` : "";
       throw new Error(`GitHub path not found${refLabel}: ${githubRepo.subpath}`);
     }
@@ -120,7 +123,7 @@ export async function resolveTarget(target: string, keepTemp = false): Promise<R
       cleanup: keepTemp
         ? undefined
         : async () => {
-            await removeTempPath(tempRoot).catch(() => undefined);
+            await removeTempPath(tempParent).catch(() => undefined);
           }
     };
   }
@@ -251,41 +254,45 @@ export async function readSkillFiles(rootPath: string, options: ReadSkillFilesOp
 
   await walk(rootPath, async (absolutePath) => {
     const relativePath = toPosixPath(path.relative(rootPath, absolutePath));
+    let handle: FileHandle | undefined;
     let metadata;
-
-    try {
-      metadata = await stat(absolutePath);
-    } catch (error) {
-      files.push({
-        path: relativePath,
-        absolutePath,
-        bytes: 0,
-        isText: false,
-        readError: filesystemErrorCode(error)
-      });
-      return;
-    }
-
-    if (metadata.size > MAX_TEXT_FILE_BYTES) {
-      files.push({
-        path: relativePath,
-        absolutePath,
-        bytes: metadata.size,
-        isText: false
-      });
-      return;
-    }
-
     let buffer: Buffer;
+
     try {
-      buffer = await readFile(absolutePath);
+      const noFollow = typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0;
+      handle = await open(absolutePath, fsConstants.O_RDONLY | noFollow);
+      metadata = await handle.stat();
+
+      if (metadata.size > MAX_TEXT_FILE_BYTES) {
+        files.push({
+          path: relativePath,
+          absolutePath,
+          bytes: metadata.size,
+          isText: false
+        });
+        return;
+      }
+
+      buffer = await readFileHandleBounded(handle, MAX_TEXT_FILE_BYTES);
     } catch (error) {
       files.push({
         path: relativePath,
         absolutePath,
-        bytes: metadata.size,
+        bytes: metadata?.size ?? 0,
         isText: false,
         readError: filesystemErrorCode(error)
+      });
+      return;
+    } finally {
+      await handle?.close().catch(() => undefined);
+    }
+
+    if (buffer.length > MAX_TEXT_FILE_BYTES) {
+      files.push({
+        path: relativePath,
+        absolutePath,
+        bytes: Math.max(metadata.size, buffer.length),
+        isText: false
       });
       return;
     }
@@ -314,6 +321,23 @@ export async function readSkillFiles(rootPath: string, options: ReadSkillFilesOp
   });
 
   return { files, textFiles };
+}
+
+async function readFileHandleBounded(handle: FileHandle, maxBytes: number): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let totalBytes = 0;
+
+  while (totalBytes <= maxBytes) {
+    const remaining = maxBytes + 1 - totalBytes;
+    const chunk = Buffer.allocUnsafe(Math.min(64 * 1024, remaining));
+    const { bytesRead } = await handle.read(chunk, 0, chunk.length, null);
+    if (bytesRead === 0) break;
+
+    chunks.push(chunk.subarray(0, bytesRead));
+    totalBytes += bytesRead;
+  }
+
+  return Buffer.concat(chunks, totalBytes);
 }
 
 interface WalkOptions {
@@ -546,7 +570,7 @@ async function downloadGitHubTarball(repoRef: GitHubRepoRef, destination: string
   const tarballUrl = `https://codeload.github.com/${encodeURIComponent(repoRef.owner)}/${encodeURIComponent(
     repoRef.repo
   )}/tar.gz/${encodeURIComponent(ref)}`;
-  const archivePath = path.join(os.tmpdir(), `skill-preflight-${randomUUID()}.tar.gz`);
+  const archivePath = path.join(path.dirname(destination), "repository.tar.gz");
 
   try {
     const archive = await fetchBuffer(tarballUrl, GITHUB_FETCH_TIMEOUT_MS, GITHUB_ARCHIVE_MAX_BYTES);
