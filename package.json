@@ -1,6 +1,6 @@
 {
   "name": "skill-preflight",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "Pre-install safety, token, and maintainability scorecard for AI agent skills.",
   "type": "module",
   "bin": {

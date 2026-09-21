@@ -32,7 +32,16 @@ const GITHUB_DOWNLOAD_CONCURRENCY = 8;
 const GITHUB_SPARSE_MAX_FILES = 3000;
 const GITHUB_SPARSE_MAX_BYTES = 20 * 1024 * 1024;
 const GITHUB_SPARSE_MAX_SINGLE_FILE_BYTES = 1024 * 1024;
+const GITHUB_API_MAX_BYTES = 20 * 1024 * 1024;
+const GITHUB_ARCHIVE_MAX_BYTES = 64 * 1024 * 1024;
 let proxyDispatcherPromise: Promise<ProxyAgent | undefined> | undefined;
+
+class GitHubResourceLimitError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "GitHubResourceLimitError";
+  }
+}
 
 export async function resolveTarget(target: string, keepTemp = false): Promise<ResolvedTarget> {
   const githubRepo = parseGitHubUrl(target);
@@ -48,6 +57,17 @@ export async function resolveTarget(target: string, keepTemp = false): Promise<R
       failures.push(`GitHub API sparse download failed: ${formatToolError(sparseError)}`);
 
       await removeTempPath(tempRoot);
+
+      if (sparseError instanceof GitHubResourceLimitError) {
+        throw new Error(
+          [
+            `Could not safely load GitHub repository: ${target}`,
+            ...failures,
+            "Scan a narrower GitHub skill directory URL or a trusted local checkout."
+          ].join("\n")
+        );
+      }
+
       await mkdir(tempRoot, { recursive: true });
 
       try {
@@ -56,6 +76,16 @@ export async function resolveTarget(target: string, keepTemp = false): Promise<R
         failures.push(`Tarball download failed: ${formatToolError(tarballError)}`);
 
         await removeTempPath(tempRoot);
+
+        if (tarballError instanceof GitHubResourceLimitError) {
+          throw new Error(
+            [
+              `Could not safely load GitHub repository: ${target}`,
+              ...failures,
+              "Scan a narrower GitHub skill directory URL or a trusted local checkout."
+            ].join("\n")
+          );
+        }
 
         try {
           await cloneGitRepository(
@@ -360,7 +390,7 @@ export function commonInstalledSkillDirs(home = os.homedir(), cwd = process.cwd(
   return [...new Set(candidates.map((candidate) => path.resolve(candidate)))];
 }
 
-interface GitHubTreeEntry {
+export interface GitHubTreeEntry {
   path: string;
   type: string;
   size?: number;
@@ -410,37 +440,11 @@ async function downloadGitHubSkillFiles(repoRef: GitHubRepoRef, destination: str
     return;
   }
 
-  const candidates = blobEntries
-    .map((entry) => ({
-      entry,
-      skillRoot: findContainingSkillRoot(entry.path, skillRoots)
-    }))
-    .filter((candidate): candidate is { entry: GitHubTreeEntry; skillRoot: string } => Boolean(candidate.skillRoot))
-    .filter(({ entry }) => !hasIgnoredPathSegment(entry.path))
-    .sort((left, right) => downloadPriority(left.entry, left.skillRoot) - downloadPriority(right.entry, right.skillRoot));
-
-  const selected: GitHubTreeEntry[] = [];
-  let selectedBytes = 0;
-
-  for (const { entry } of candidates) {
-    const isSkillFile = basenamePosix(entry.path).toLowerCase() === "skill.md";
-    const size = entry.size ?? 0;
-
-    if (
-      !isSkillFile &&
-      (selected.length >= GITHUB_SPARSE_MAX_FILES ||
-        selectedBytes + size > GITHUB_SPARSE_MAX_BYTES ||
-        size > GITHUB_SPARSE_MAX_SINGLE_FILE_BYTES)
-    ) {
-      continue;
-    }
-
-    selected.push(entry);
-    selectedBytes += size;
-  }
+  const selected = selectGitHubDownloadEntries(blobEntries, skillRoots);
 
   const downloadedSkillFiles = new Set<string>();
   const skillFileFailures: string[] = [];
+  let downloadedBytes = 0;
 
   await runWithConcurrency(selected, GITHUB_DOWNLOAD_CONCURRENCY, async (entry) => {
     const fileUrl = `https://raw.githubusercontent.com/${encodeURIComponent(repoRef.owner)}/${encodeURIComponent(
@@ -449,7 +453,19 @@ async function downloadGitHubSkillFiles(repoRef: GitHubRepoRef, destination: str
     const isSkillFile = basenamePosix(entry.path).toLowerCase() === "skill.md";
 
     try {
-      const content = await fetchBuffer(fileUrl, GITHUB_FILE_FETCH_TIMEOUT_MS);
+      const content = await fetchBuffer(
+        fileUrl,
+        GITHUB_FILE_FETCH_TIMEOUT_MS,
+        GITHUB_SPARSE_MAX_SINGLE_FILE_BYTES
+      );
+
+      if (downloadedBytes + content.length > GITHUB_SPARSE_MAX_BYTES) {
+        throw new GitHubResourceLimitError(
+          `GitHub skill files exceed the ${formatByteLimit(GITHUB_SPARSE_MAX_BYTES)} download limit.`
+        );
+      }
+      downloadedBytes += content.length;
+
       const outputPath = resolveInside(destination, entry.path);
 
       await mkdir(path.dirname(outputPath), { recursive: true });
@@ -459,6 +475,9 @@ async function downloadGitHubSkillFiles(repoRef: GitHubRepoRef, destination: str
         downloadedSkillFiles.add(entry.path);
       }
     } catch (error) {
+      if (error instanceof GitHubResourceLimitError) {
+        throw error;
+      }
       if (isSkillFile) {
         skillFileFailures.push(`${entry.path}: ${formatToolError(error)}`);
       }
@@ -475,6 +494,53 @@ async function downloadGitHubSkillFiles(repoRef: GitHubRepoRef, destination: str
   }
 }
 
+export function selectGitHubDownloadEntries(
+  blobEntries: GitHubTreeEntry[],
+  skillRoots: Set<string>
+): GitHubTreeEntry[] {
+  const candidates = blobEntries
+    .map((entry) => ({
+      entry,
+      skillRoot: findContainingSkillRoot(entry.path, skillRoots)
+    }))
+    .filter((candidate): candidate is { entry: GitHubTreeEntry; skillRoot: string } => Boolean(candidate.skillRoot))
+    .filter(({ entry }) => !hasIgnoredPathSegment(entry.path))
+    .sort((left, right) => downloadPriority(left.entry, left.skillRoot) - downloadPriority(right.entry, right.skillRoot));
+
+  const selected: GitHubTreeEntry[] = [];
+  let selectedBytes = 0;
+
+  for (const { entry } of candidates) {
+    const isSkillFile = basenamePosix(entry.path).toLowerCase() === "skill.md";
+    const size = entry.size ?? 0;
+
+    if (size > GITHUB_SPARSE_MAX_SINGLE_FILE_BYTES) {
+      if (isSkillFile) {
+        throw new GitHubResourceLimitError(
+          `${entry.path} exceeds the ${formatByteLimit(GITHUB_SPARSE_MAX_SINGLE_FILE_BYTES)} per-file limit.`
+        );
+      }
+      continue;
+    }
+
+    if (selected.length >= GITHUB_SPARSE_MAX_FILES || selectedBytes + size > GITHUB_SPARSE_MAX_BYTES) {
+      if (isSkillFile) {
+        throw new GitHubResourceLimitError(
+          `GitHub skill files exceed the ${GITHUB_SPARSE_MAX_FILES}-file or ${formatByteLimit(
+            GITHUB_SPARSE_MAX_BYTES
+          )} download limit.`
+        );
+      }
+      continue;
+    }
+
+    selected.push(entry);
+    selectedBytes += size;
+  }
+
+  return selected;
+}
+
 async function downloadGitHubTarball(repoRef: GitHubRepoRef, destination: string): Promise<void> {
   const ref = repoRef.ref ?? "HEAD";
   const tarballUrl = `https://codeload.github.com/${encodeURIComponent(repoRef.owner)}/${encodeURIComponent(
@@ -483,12 +549,42 @@ async function downloadGitHubTarball(repoRef: GitHubRepoRef, destination: string
   const archivePath = path.join(os.tmpdir(), `skill-preflight-${randomUUID()}.tar.gz`);
 
   try {
-    const archive = await fetchBuffer(tarballUrl, GITHUB_FETCH_TIMEOUT_MS);
+    const archive = await fetchBuffer(tarballUrl, GITHUB_FETCH_TIMEOUT_MS, GITHUB_ARCHIVE_MAX_BYTES);
     await writeFile(archivePath, archive);
+    let extractedFiles = 0;
+    let extractedBytes = 0;
+
     await tar.x({
       file: archivePath,
       cwd: destination,
-      strip: 1
+      strip: 1,
+      strict: true,
+      preservePaths: false,
+      unlink: true,
+      maxDepth: 64,
+      maxDecompressionRatio: 100,
+      filter: (entryPath, entry) => {
+        const relativePath = entryPath.split("/").slice(1).join("/");
+        if (!relativePath) return true;
+        if (repoRef.subpath && !isWithinRepoPath(relativePath, repoRef.subpath)) return false;
+        if (hasIgnoredPathSegment(relativePath)) return false;
+        if (!("type" in entry)) return false;
+        if (entry.type === "Directory") return true;
+        if (entry.type !== "File" && entry.type !== "OldFile" && entry.type !== "ContiguousFile") return false;
+        if (entry.size > GITHUB_SPARSE_MAX_SINGLE_FILE_BYTES) return false;
+
+        extractedFiles += 1;
+        extractedBytes += entry.size;
+        if (extractedFiles > GITHUB_SPARSE_MAX_FILES || extractedBytes > GITHUB_SPARSE_MAX_BYTES) {
+          throw new GitHubResourceLimitError(
+            `GitHub archive exceeds the ${GITHUB_SPARSE_MAX_FILES}-file or ${formatByteLimit(
+              GITHUB_SPARSE_MAX_BYTES
+            )} extraction limit.`
+          );
+        }
+
+        return true;
+      }
     });
   } finally {
     await removeTempPath(archivePath).catch(() => undefined);
@@ -501,10 +597,13 @@ async function fetchJson<T>(url: string, timeoutMs: number): Promise<T> {
       Accept: "application/vnd.github+json",
       "User-Agent": "skill-preflight"
     }
-  }, async (response) => (await response.json()) as T);
+  }, async (response) => {
+    const content = await readLimitedResponseBuffer(response, GITHUB_API_MAX_BYTES, url);
+    return JSON.parse(content.toString("utf8")) as T;
+  });
 }
 
-async function fetchBuffer(url: string, timeoutMs: number): Promise<Buffer> {
+async function fetchBuffer(url: string, timeoutMs: number, maxBytes: number): Promise<Buffer> {
   return fetchWithTimeout(
     url,
     timeoutMs,
@@ -514,8 +613,45 @@ async function fetchBuffer(url: string, timeoutMs: number): Promise<Buffer> {
       },
       redirect: "follow"
     },
-    async (response) => Buffer.from(await response.arrayBuffer())
+    async (response) => readLimitedResponseBuffer(response, maxBytes, url)
   );
+}
+
+export async function readLimitedResponseBuffer(
+  response: Response,
+  maxBytes: number,
+  source = "HTTP response"
+): Promise<Buffer> {
+  const declaredLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+    throw new GitHubResourceLimitError(`${source} exceeds the ${formatByteLimit(maxBytes)} response limit.`);
+  }
+
+  if (!response.body) {
+    return Buffer.alloc(0);
+  }
+
+  const reader = response.body.getReader();
+  const chunks: Buffer[] = [];
+  let totalBytes = 0;
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      totalBytes += value.byteLength;
+      if (totalBytes > maxBytes) {
+        await reader.cancel();
+        throw new GitHubResourceLimitError(`${source} exceeds the ${formatByteLimit(maxBytes)} response limit.`);
+      }
+      chunks.push(Buffer.from(value));
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  return Buffer.concat(chunks, totalBytes);
 }
 
 async function fetchWithTimeout<T>(
@@ -561,8 +697,13 @@ async function runWithConcurrency<T>(
   worker: (item: T) => Promise<void>
 ): Promise<void> {
   let nextIndex = 0;
+  let firstError: unknown;
   const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
     while (true) {
+      if (firstError) {
+        return;
+      }
+
       const index = nextIndex;
       nextIndex += 1;
 
@@ -570,11 +711,19 @@ async function runWithConcurrency<T>(
         return;
       }
 
-      await worker(items[index]);
+      try {
+        await worker(items[index]);
+      } catch (error) {
+        firstError ??= error;
+        return;
+      }
     }
   });
 
   await Promise.all(workers);
+  if (firstError) {
+    throw firstError;
+  }
 }
 
 function findContainingSkillRoot(filePath: string, skillRoots: Set<string>): string | undefined {
@@ -629,6 +778,10 @@ function hasIgnoredPathSegment(value: string): boolean {
 
 function encodePosixPath(value: string): string {
   return value.split("/").map(encodeURIComponent).join("/");
+}
+
+function formatByteLimit(bytes: number): string {
+  return `${Math.round(bytes / (1024 * 1024))} MiB`;
 }
 
 function isWithinRepoPath(candidate: string, requestedPath: string): boolean {

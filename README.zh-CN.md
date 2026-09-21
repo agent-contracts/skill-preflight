@@ -245,7 +245,7 @@ skill-preflight scan . --format sarif --out skill-preflight.sarif
 
 ## 安全原则
 
-SkillPreflight 不会执行被扫描 Skill 里的脚本。超大文件只统计体积，不会整块载入文本分析。
+SkillPreflight 不会执行被扫描 Skill 里的脚本。超大文件只统计体积，不会整块载入文本分析。远程 GitHub 响应和归档解压设有文件数量与字节上限；仓库超过上限时，请改用更精确的 Skill 目录链接或可信的本地检出目录。
 
 它只读取文件并进行静态分析，重点识别潜在风险，例如：
 

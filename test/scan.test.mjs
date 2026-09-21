@@ -11,6 +11,8 @@ import {
   commonInstalledSkillDirs,
   discoverSkillRoots,
   parseGitHubUrl,
+  readLimitedResponseBuffer,
+  selectGitHubDownloadEntries,
   readSkillFiles
 } from "../dist/core/filesystem.js";
 import { loadConfig } from "../dist/core/policy.js";
@@ -83,6 +85,58 @@ describe("SkillPreflight scanner", () => {
       undefined
     );
     assert.equal(parseGitHubUrl("https://github.com/agent-contracts/skill-preflight/issues"), undefined);
+  });
+
+  it("rejects oversized GitHub responses before buffering them", async () => {
+    const response = new Response("oversized", {
+      headers: {
+        "content-length": "1048577"
+      }
+    });
+
+    await assert.rejects(
+      readLimitedResponseBuffer(response, 1024 * 1024, "test response"),
+      /test response exceeds the 1 MiB response limit/
+    );
+
+    const streamedResponse = new Response(
+      new ReadableStream({
+        start(controller) {
+          controller.enqueue(new Uint8Array(600 * 1024));
+          controller.enqueue(new Uint8Array(600 * 1024));
+          controller.close();
+        }
+      })
+    );
+
+    await assert.rejects(
+      readLimitedResponseBuffer(streamedResponse, 1024 * 1024, "streamed response"),
+      /streamed response exceeds the 1 MiB response limit/
+    );
+  });
+
+  it("applies remote download limits to SKILL.md files", () => {
+    const oversizedSkill = {
+      path: "large/SKILL.md",
+      type: "blob",
+      size: 1024 * 1024 + 1
+    };
+
+    assert.throws(
+      () => selectGitHubDownloadEntries([oversizedSkill], new Set(["large"])),
+      /large\/SKILL.md exceeds the 1 MiB per-file limit/
+    );
+
+    const manySkills = Array.from({ length: 21 }, (_, index) => ({
+      path: `skill-${index}/SKILL.md`,
+      type: "blob",
+      size: 1024 * 1024
+    }));
+
+    assert.throws(
+      () => selectGitHubDownloadEntries(manySkills, new Set(manySkills.map((entry) => path.dirname(entry.path)))),
+      /GitHub skill files exceed the 3000-file or 20 MiB download limit/
+    );
   });
 
   it("includes shared, Codex, Claude, Cursor, and Gemini installed skill directories", () => {

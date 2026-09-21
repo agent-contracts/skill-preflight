@@ -211,7 +211,7 @@ Read the [reproducible benchmark report](benchmarks/2026-09-public-skills/README
 
 ## Safety Principle
 
-SkillPreflight does not execute scripts inside scanned skills. It only reads files and performs static analysis. Oversized files are measured without being loaded into text analysis.
+SkillPreflight does not execute scripts inside scanned skills. It only reads files and performs static analysis. Oversized files are measured without being loaded into text analysis. Remote GitHub responses and archive extraction are bounded by file-count and byte limits; scan a narrower skill directory URL or a trusted local checkout when a repository exceeds them.
 
 ## Example Output
 
