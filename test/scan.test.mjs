@@ -1,15 +1,19 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import { describe, it } from "node:test";
 import path from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
+import * as tar from "tar";
 import {
+  allowArchiveFile,
   cloneGitRepository,
   commonInstalledSkillDirs,
   discoverSkillRoots,
+  extractGitHubArchive,
   parseGitHubUrl,
   readLimitedResponseBuffer,
   selectGitHubDownloadEntries,
@@ -137,6 +141,35 @@ describe("SkillPreflight scanner", () => {
       () => selectGitHubDownloadEntries(manySkills, new Set(manySkills.map((entry) => path.dirname(entry.path)))),
       /GitHub skill files exceed the 3000-file or 20 MiB download limit/
     );
+  });
+
+  it("rejects oversized archived SKILL.md files rather than silently skipping them", () => {
+    assert.throws(
+      () => allowArchiveFile("nested/SKILL.md", 1024 * 1024 + 1),
+      /nested\/SKILL\.md exceeds the 1 MiB per-file limit/
+    );
+    assert.equal(allowArchiveFile("nested/assets/large.bin", 1024 * 1024 + 1), false);
+    assert.equal(allowArchiveFile("nested/SKILL.md", 1024 * 1024), true);
+  });
+
+  it("fails archive extraction when a SKILL.md exceeds the scan limit", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "skill-preflight-archive-test-"));
+    try {
+      const source = path.join(tempRoot, "source", "repo", "skill");
+      const destination = path.join(tempRoot, "destination");
+      const archive = path.join(tempRoot, "repository.tar.gz");
+      await mkdir(source, { recursive: true });
+      await mkdir(destination);
+      await writeFile(path.join(source, "SKILL.md"), randomBytes(1024 * 1024 + 1));
+      await tar.c({ gzip: true, cwd: path.join(tempRoot, "source"), file: archive }, ["repo"]);
+
+      await assert.rejects(
+        extractGitHubArchive(archive, destination),
+        /skill\/SKILL\.md exceeds the 1 MiB per-file limit/
+      );
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
   });
 
   it("includes shared, Codex, Claude, Cursor, and Gemini installed skill directories", () => {
