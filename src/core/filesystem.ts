@@ -437,6 +437,10 @@ async function downloadGitHubSkillFiles(repoRef: GitHubRepoRef, destination: str
     throw new Error("GitHub API response did not include a repository tree.");
   }
 
+  if (treeResponse.truncated) {
+    throw new Error("GitHub API returned an incomplete repository tree; trying a complete archive instead.");
+  }
+
   const scopedEntries = repoRef.subpath
     ? entries.filter((entry) => isWithinRepoPath(entry.path, repoRef.subpath as string))
     : entries;
@@ -455,10 +459,6 @@ async function downloadGitHubSkillFiles(repoRef: GitHubRepoRef, destination: str
       .filter((entry) => basenamePosix(entry.path).toLowerCase() === "skill.md")
       .map((entry) => dirnamePosix(entry.path))
   );
-
-  if (treeResponse.truncated && skillRoots.size === 0) {
-    throw new Error("GitHub API tree response was truncated before any SKILL.md files were found.");
-  }
 
   if (skillRoots.size === 0) {
     return;
@@ -575,44 +575,75 @@ async function downloadGitHubTarball(repoRef: GitHubRepoRef, destination: string
   try {
     const archive = await fetchBuffer(tarballUrl, GITHUB_FETCH_TIMEOUT_MS, GITHUB_ARCHIVE_MAX_BYTES);
     await writeFile(archivePath, archive);
-    let extractedFiles = 0;
-    let extractedBytes = 0;
-
-    await tar.x({
-      file: archivePath,
-      cwd: destination,
-      strip: 1,
-      strict: true,
-      preservePaths: false,
-      unlink: true,
-      maxDepth: 64,
-      maxDecompressionRatio: 100,
-      filter: (entryPath, entry) => {
-        const relativePath = entryPath.split("/").slice(1).join("/");
-        if (!relativePath) return true;
-        if (repoRef.subpath && !isWithinRepoPath(relativePath, repoRef.subpath)) return false;
-        if (hasIgnoredPathSegment(relativePath)) return false;
-        if (!("type" in entry)) return false;
-        if (entry.type === "Directory") return true;
-        if (entry.type !== "File" && entry.type !== "OldFile" && entry.type !== "ContiguousFile") return false;
-        if (entry.size > GITHUB_SPARSE_MAX_SINGLE_FILE_BYTES) return false;
-
-        extractedFiles += 1;
-        extractedBytes += entry.size;
-        if (extractedFiles > GITHUB_SPARSE_MAX_FILES || extractedBytes > GITHUB_SPARSE_MAX_BYTES) {
-          throw new GitHubResourceLimitError(
-            `GitHub archive exceeds the ${GITHUB_SPARSE_MAX_FILES}-file or ${formatByteLimit(
-              GITHUB_SPARSE_MAX_BYTES
-            )} extraction limit.`
-          );
-        }
-
-        return true;
-      }
-    });
+    await extractGitHubArchive(archivePath, destination, repoRef.subpath);
   } finally {
     await removeTempPath(archivePath).catch(() => undefined);
   }
+}
+
+export async function extractGitHubArchive(
+  archivePath: string,
+  destination: string,
+  subpath?: string
+): Promise<void> {
+  let extractedFiles = 0;
+  let extractedBytes = 0;
+  let archiveLimitError: GitHubResourceLimitError | undefined;
+
+  await tar.x({
+    file: archivePath,
+    cwd: destination,
+    strip: 1,
+    strict: true,
+    preservePaths: false,
+    unlink: true,
+    maxDepth: 64,
+    maxDecompressionRatio: 100,
+    filter: (entryPath, entry) => {
+      if (archiveLimitError) return false;
+      const relativePath = entryPath.split("/").slice(1).join("/");
+      if (!relativePath) return true;
+      if (subpath && !isWithinRepoPath(relativePath, subpath)) return false;
+      if (hasIgnoredPathSegment(relativePath)) return false;
+      if (!("type" in entry)) return false;
+      if (entry.type === "Directory") return true;
+      if (entry.type !== "File" && entry.type !== "OldFile" && entry.type !== "ContiguousFile") return false;
+
+      try {
+        if (!allowArchiveFile(relativePath, entry.size)) return false;
+      } catch (error) {
+        if (error instanceof GitHubResourceLimitError) {
+          archiveLimitError = error;
+          return false;
+        }
+        throw error;
+      }
+
+      extractedFiles += 1;
+      extractedBytes += entry.size;
+      if (extractedFiles > GITHUB_SPARSE_MAX_FILES || extractedBytes > GITHUB_SPARSE_MAX_BYTES) {
+        archiveLimitError = new GitHubResourceLimitError(
+          `GitHub archive exceeds the ${GITHUB_SPARSE_MAX_FILES}-file or ${formatByteLimit(
+            GITHUB_SPARSE_MAX_BYTES
+          )} extraction limit.`
+        );
+        return false;
+      }
+
+      return true;
+    }
+  });
+  if (archiveLimitError) throw archiveLimitError;
+}
+
+export function allowArchiveFile(relativePath: string, size: number): boolean {
+  if (size <= GITHUB_SPARSE_MAX_SINGLE_FILE_BYTES) return true;
+  if (basenamePosix(relativePath).toLowerCase() === "skill.md") {
+    throw new GitHubResourceLimitError(
+      `${relativePath} exceeds the ${formatByteLimit(GITHUB_SPARSE_MAX_SINGLE_FILE_BYTES)} per-file limit.`
+    );
+  }
+  return false;
 }
 
 async function fetchJson<T>(url: string, timeoutMs: number): Promise<T> {
