@@ -635,6 +635,46 @@ describe("SkillPreflight scanner", () => {
     );
   });
 
+  it("creates nested report directories and saves findings before a gate failure", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "skill-preflight-output-"));
+    const outputPath = path.join(tempRoot, "reports with spaces", "nested", "scan.json");
+    try {
+      await assert.rejects(
+        execFileAsync(process.execPath, [
+          "dist/index.js", "scan", "examples/risky-skill", "--format", "json",
+          "--out", outputPath, "--fail-on", "critical"
+        ], { cwd: projectRoot }),
+        (error) => {
+          assert.equal(error.code, 1);
+          assert.match(error.stdout, /Wrote json report to/);
+          assert.match(error.stderr, /critical severity or higher/);
+          return true;
+        }
+      );
+      const report = JSON.parse(await readFile(outputPath, "utf8"));
+      assert.equal(report.summary.count, 1);
+      assert.ok(report.reports[0].findings.some((finding) => finding.severity === "critical"));
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("creates nested badge output directories", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "skill-preflight-badge-output-"));
+    const outputPath = path.join(tempRoot, "badges with spaces", "nested", "badge.json");
+    try {
+      const { stdout } = await execFileAsync(process.execPath, [
+        "dist/index.js", "badge", "examples/good-skill", "--out", outputPath
+      ], { cwd: projectRoot });
+      assert.match(stdout, /Wrote badge JSON to/);
+      const badge = JSON.parse(await readFile(outputPath, "utf8"));
+      assert.equal(badge.schemaVersion, 1);
+      assert.equal(badge.message, "100/100 A");
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   it("renders json and markdown reports", async () => {
     const skill = await scanSkillRoot(path.join(projectRoot, "examples", "good-skill"), "good");
     const packageMetadata = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
