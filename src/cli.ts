@@ -1,4 +1,4 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { Command } from "commander";
@@ -106,6 +106,7 @@ export async function runCli(argv: string[]): Promise<void> {
 
       if (options.out) {
         const outPath = path.resolve(options.out);
+        await mkdir(path.dirname(outPath), { recursive: true });
         await writeFile(outPath, rendered, "utf8");
         process.stdout.write(`Wrote ${format} report to ${outPath}\n`);
       } else {
@@ -142,6 +143,7 @@ export async function runCli(argv: string[]): Promise<void> {
 
       if (options.out) {
         const outPath = path.resolve(options.out);
+        await mkdir(path.dirname(outPath), { recursive: true });
         await writeFile(outPath, rendered, "utf8");
         process.stdout.write(`Wrote badge JSON to ${outPath}\n`);
       } else {

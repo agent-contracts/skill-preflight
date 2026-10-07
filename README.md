@@ -131,6 +131,8 @@ Options:
 
 Summary mode supports text, JSON, Markdown, and HTML output. SARIF always contains the full set of findings for code scanning.
 
+`--out` automatically creates missing parent directories for reports and badge JSON, including paths with spaces. Reports are saved before score or severity gates return a failing exit code.
+
 ## Policy and CI Gates
 
 Use an explicit JSON policy to keep generated files and reviewed false positives out of a scan:
