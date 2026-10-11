@@ -466,16 +466,13 @@ async function downloadGitHubSkillFiles(repoRef: GitHubRepoRef, destination: str
 
   const selected = selectGitHubDownloadEntries(blobEntries, skillRoots);
 
-  const downloadedSkillFiles = new Set<string>();
-  const skillFileFailures: string[] = [];
+  const downloadFailures: string[] = [];
   let downloadedBytes = 0;
 
   await runWithConcurrency(selected, GITHUB_DOWNLOAD_CONCURRENCY, async (entry) => {
     const fileUrl = `https://raw.githubusercontent.com/${encodeURIComponent(repoRef.owner)}/${encodeURIComponent(
       repoRef.repo
     )}/${encodeURIComponent(ref)}/${encodePosixPath(entry.path)}`;
-    const isSkillFile = basenamePosix(entry.path).toLowerCase() === "skill.md";
-
     try {
       const content = await fetchBuffer(
         fileUrl,
@@ -494,25 +491,19 @@ async function downloadGitHubSkillFiles(repoRef: GitHubRepoRef, destination: str
 
       await mkdir(path.dirname(outputPath), { recursive: true });
       await writeFile(outputPath, content);
-
-      if (isSkillFile) {
-        downloadedSkillFiles.add(entry.path);
-      }
     } catch (error) {
       if (error instanceof GitHubResourceLimitError) {
         throw error;
       }
-      if (isSkillFile) {
-        skillFileFailures.push(`${entry.path}: ${formatToolError(error)}`);
-      }
+      downloadFailures.push(`${entry.path}: ${formatToolError(error)}`);
     }
   });
 
-  if (downloadedSkillFiles.size === 0) {
+  if (downloadFailures.length > 0) {
     throw new Error(
       [
-        "GitHub API found SKILL.md files, but none could be downloaded from raw.githubusercontent.com.",
-        ...skillFileFailures.slice(0, 5)
+        `GitHub API sparse download was incomplete: ${downloadFailures.length} selected file(s) could not be downloaded.`,
+        ...downloadFailures.slice(0, 5)
       ].join("\n")
     );
   }

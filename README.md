@@ -215,6 +215,8 @@ Read the [reproducible benchmark report](benchmarks/2026-09-public-skills/README
 
 SkillPreflight does not execute scripts inside scanned skills. It only reads files and performs static analysis. Oversized files are measured without being loaded into text analysis. Remote GitHub responses and archive extraction are bounded by file-count and byte limits; scan a narrower skill directory URL or a trusted local checkout when a repository exceeds them.
 
+If any file selected for a GitHub sparse download fails, SkillPreflight retries through an archive instead of silently scoring the incomplete download. If recovery also fails, it reports an error rather than returning a partial score.
+
 ## Example Output
 
 ```text
