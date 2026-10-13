@@ -26,6 +26,10 @@ inputs:
     description: Fail for findings at or above this severity.
     required: false
     default: ""
+  max-tokens:
+    description: Optional positive integer limit for estimated activation tokens per skill.
+    required: false
+    default: ""
   config:
     description: Optional path to an explicit SkillPreflight JSON policy.
     required: false
@@ -67,6 +71,7 @@ runs:
         SKILL_PREFLIGHT_OUT: ${{ inputs.out }}
         SKILL_PREFLIGHT_FAIL_BELOW: ${{ inputs.fail-below }}
         SKILL_PREFLIGHT_FAIL_ON: ${{ inputs.fail-on }}
+        SKILL_PREFLIGHT_MAX_TOKENS: ${{ inputs.max-tokens }}
         SKILL_PREFLIGHT_CONFIG: ${{ inputs.config }}
         SKILL_PREFLIGHT_EXCLUDE: ${{ inputs.exclude }}
         SKILL_PREFLIGHT_IGNORE_RULES: ${{ inputs.ignore-rules }}
@@ -83,6 +88,9 @@ runs:
         fi
         if [ -n "$SKILL_PREFLIGHT_FAIL_ON" ]; then
           args+=(--fail-on "$SKILL_PREFLIGHT_FAIL_ON")
+        fi
+        if [ -n "$SKILL_PREFLIGHT_MAX_TOKENS" ]; then
+          args+=(--max-tokens "$SKILL_PREFLIGHT_MAX_TOKENS")
         fi
         if [ -n "$SKILL_PREFLIGHT_CONFIG" ]; then
           args+=(--config "$SKILL_PREFLIGHT_CONFIG")

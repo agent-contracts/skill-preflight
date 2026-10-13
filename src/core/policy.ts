@@ -3,13 +3,14 @@ import path from "node:path";
 import type { Finding, Severity, SuppressedFinding } from "./types.js";
 
 const SEVERITIES: Severity[] = ["info", "low", "medium", "high", "critical"];
-const CONFIG_KEYS = new Set(["exclude", "ignoreRules", "failBelow", "failOn"]);
+const CONFIG_KEYS = new Set(["exclude", "ignoreRules", "failBelow", "failOn", "maxTokens"]);
 
 export interface SkillPreflightConfig {
   exclude: string[];
   ignoreRules: string[];
   failBelow?: number;
   failOn?: Severity;
+  maxTokens?: number;
 }
 
 export async function loadConfig(filePath?: string): Promise<SkillPreflightConfig> {
@@ -21,7 +22,7 @@ export async function loadConfig(filePath?: string): Promise<SkillPreflightConfi
   let parsed: unknown;
 
   try {
-    parsed = JSON.parse(await readFile(resolvedPath, "utf8")) as unknown;
+    parsed = JSON.parse((await readFile(resolvedPath, "utf8")).replace(/^\uFEFF/, "")) as unknown;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`Could not read SkillPreflight config ${resolvedPath}: ${message}`);
@@ -36,21 +37,42 @@ export async function loadConfig(filePath?: string): Promise<SkillPreflightConfi
     throw new Error(`Invalid SkillPreflight config ${resolvedPath}: unknown keys ${unknownKeys.join(", ")}.`);
   }
 
+  for (const key of ["failBelow", "maxTokens"]) {
+    if (parsed[key] !== undefined && typeof parsed[key] !== "number") {
+      throw new Error(`Invalid SkillPreflight config ${resolvedPath}: ${key} must be a number.`);
+    }
+  }
+
   return {
     exclude: parseStringArray(parsed.exclude, "exclude", resolvedPath),
     ignoreRules: parseStringArray(parsed.ignoreRules, "ignoreRules", resolvedPath),
     failBelow: parsed.failBelow === undefined ? undefined : parseScoreThreshold(parsed.failBelow, "failBelow"),
-    failOn: parsed.failOn === undefined ? undefined : parseSeverity(String(parsed.failOn), "failOn")
+    failOn: parsed.failOn === undefined ? undefined : parseSeverity(String(parsed.failOn), "failOn"),
+    maxTokens: parsed.maxTokens === undefined ? undefined : parsePositiveInteger(parsed.maxTokens, "maxTokens")
   };
 }
 
 export function parseScoreThreshold(value: unknown, label: string): number {
-  const parsed = typeof value === "number" ? value : Number(value);
+  const parsed = numericValue(value);
   if (!Number.isFinite(parsed) || parsed < 0 || parsed > 100) {
     throw new Error(`Invalid ${label} value: ${String(value)}. Use a number from 0 to 100.`);
   }
 
   return parsed;
+}
+
+export function parsePositiveInteger(value: unknown, label: string): number {
+  const parsed = numericValue(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 1) {
+    throw new Error(`Invalid ${label} value: ${String(value)}. Use a positive integer.`);
+  }
+  return parsed;
+}
+
+function numericValue(value: unknown): number {
+  if (typeof value === "number") return value;
+  if (typeof value === "string" && value.trim() !== "") return Number(value);
+  return Number.NaN;
 }
 
 export function parseSeverity(value: string, label: string): Severity {

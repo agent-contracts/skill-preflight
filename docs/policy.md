@@ -36,10 +36,15 @@ The scanner does not discover config files automatically. A policy must be selec
 | `ignoreRules` | `string[]` | Exact rule IDs or wildcard patterns whose findings are suppressed. |
 | `failBelow` | `number` | Fail when any active skill score is below this value from 0 to 100. |
 | `failOn` | `string` | Fail for active findings at or above `info`, `low`, `medium`, `high`, or `critical`. |
+| `maxTokens` | `number` | Optional positive safe integer; fail when any skill's estimated activation tokens exceed it. |
 
 `*` matches within one path segment and `**` crosses directories. Rule patterns also support `*`, such as `compatibility.*`.
 
 CLI `--exclude` and `--ignore-rule` values are merged with the policy. CLI `--fail-below` and `--fail-on` values override policy gates.
+
+CLI `--max-tokens` overrides `maxTokens`. Exactly matching the budget passes. Budget gates evaluate all scanned skills, including those hidden by summary mode, and are independent of finding suppression. Reports are written before a budget failure returns exit code 1. This estimates instruction length, not actual model usage or billing.
+
+Policy files may be UTF-8 with or without a BOM. `failBelow` and `maxTokens` must be JSON numbers; values such as `null`, `false`, `""`, or `"70"` are rejected rather than coerced. `failBelow` remains in the range 0-100; `maxTokens` must be a positive safe integer.
 
 The GitHub Action follows the same precedence. If `config` is supplied and the `fail-below` input is omitted, the policy's `failBelow` value is preserved. With neither setting, the Action uses its default gate of 70.
 
