@@ -128,9 +128,16 @@ export async function resolveTarget(target: string, keepTemp = false): Promise<R
     };
   }
 
-  const localPath = path.resolve(target);
+  let localPath = path.resolve(target);
   if (!(await pathExists(localPath))) {
     throw new Error(`Target does not exist: ${target}`);
+  }
+
+  if ((await stat(localPath)).isFile()) {
+    if (path.basename(localPath).toLowerCase() !== "skill.md") {
+      throw new Error("Local file targets must be SKILL.md. Pass a skill directory to scan other files.");
+    }
+    localPath = path.dirname(localPath);
   }
 
   return {

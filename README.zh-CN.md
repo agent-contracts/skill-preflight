@@ -155,6 +155,7 @@ skill-preflight rules
 --out <file>            将报告写入文件。
 --fail-below <score>    如果任意 Skill 分数低于该阈值，则以退出码 1 结束。
 --fail-on <severity>    如果发现达到指定严重级别则失败，可用 info、low、medium、high、critical。
+--max-tokens <count>    如果任意 Skill 的估算激活 Token 数超过预算，则以退出码 1 结束。
 --config <file>         显式加载 JSON 策略文件。
 --exclude <glob>        排除相对于扫描目标的路径，可重复使用。
 --ignore-rule <id>      抑制规则 ID 或通配模式，可重复使用。
@@ -167,6 +168,20 @@ skill-preflight rules
 
 `--out` 会自动创建报告和 badge JSON 所需的上级目录，支持包含空格的路径。评分或严重级别门禁返回失败退出码之前，报告仍会保存，便于排查。
 
+现在也可以直接传入本地 `SKILL.md` 路径，会扫描其所在目录，包含配套文件与嵌套 Skill，而不只是这一个文件：
+
+```bash
+npx skill-preflight scan ./my-skill/SKILL.md
+```
+
+独立设置每个 Skill 的指令预算：
+
+```bash
+npx skill-preflight scan ./my-skill --max-tokens 2000 --format json --out reports/scan.json
+```
+
+预算为可选的正整数，等于预算时通过；摘要模式也会检查所有 Skill，忽略评分规则不会关闭预算门槛。超过预算时，先保存报告再返回退出码 1。估算范围是 `SKILL.md` 激活指令，不包括运行时 Token 消耗、引用文件加载或 API 账单。
+
 ## 策略和 CI 门禁
 
 策略文件适合排除生成文件、测试夹具以及已经人工确认的误报：
@@ -176,7 +191,8 @@ skill-preflight rules
   "exclude": ["fixtures/**", "vendor/**"],
   "ignoreRules": ["compatibility.os-specific-command"],
   "failBelow": 70,
-  "failOn": "high"
+  "failOn": "high",
+  "maxTokens": 2000
 }
 ```
 
@@ -185,6 +201,8 @@ skill-preflight scan . --config skill-preflight.json
 ```
 
 SkillPreflight 不会自动加载被扫描仓库中的配置，必须由用户显式指定，防止不可信的远程 Skill 自行隐藏风险。被抑制的发现不会扣分或触发门禁，但会保留在 JSON 报告中并计入“已抑制发现”数量。
+
+命令行 `--max-tokens` 优先于配置 `maxTokens`。支持带或不带 BOM 的 UTF-8 JSON 配置；`failBelow` 和 `maxTokens` 必须填写 JSON 数字，不能使用字符串、布尔值或 null。
 
 完整配置说明请参考 `docs/policy.md`。
 

@@ -4,6 +4,7 @@ import path from "node:path";
 import { Command } from "commander";
 import {
   loadConfig,
+  parsePositiveInteger,
   parseScoreThreshold,
   parseSeverity,
   uniqueStrings
@@ -28,6 +29,7 @@ interface ScanCommandOptions extends PolicyCommandOptions {
   out?: string;
   failBelow?: string;
   failOn?: string;
+  maxTokens?: string;
   keepTemp?: boolean;
   summary?: boolean;
   top?: string;
@@ -63,6 +65,7 @@ export async function runCli(argv: string[]): Promise<void> {
     .option("--out <file>", "Write report to a file")
     .option("--fail-below <score>", "Exit with code 1 if any skill score is below this threshold")
     .option("--fail-on <severity>", "Exit with code 1 for findings at or above this severity")
+    .option("--max-tokens <count>", "Exit with code 1 if any skill exceeds this estimated activation token budget")
     .option("--config <file>", "Load policy from an explicit JSON config file")
     .option("--exclude <glob>", "Exclude a target-relative path glob (repeatable)", collectOption, [])
     .option("--ignore-rule <rule-id>", "Suppress a finding rule or wildcard pattern (repeatable)", collectOption, [])
@@ -82,6 +85,10 @@ export async function runCli(argv: string[]): Promise<void> {
         options.failOn === undefined
           ? config.failOn
           : parseSeverity(options.failOn, "--fail-on");
+      const maxTokens =
+        options.maxTokens === undefined
+          ? config.maxTokens
+          : parsePositiveInteger(options.maxTokens, "--max-tokens");
 
       if (options.top !== undefined && !options.summary) {
         throw new Error("--top can only be used with --summary.");
@@ -113,7 +120,7 @@ export async function runCli(argv: string[]): Promise<void> {
         process.stdout.write(rendered);
       }
 
-      const gateFailures = evaluateGates(report, failBelow, failOn);
+      const gateFailures = evaluateGates(report, failBelow, failOn, maxTokens);
       if (gateFailures.length > 0) {
         process.stderr.write(`${gateFailures.join("\n")}\n`);
         process.exitCode = 1;
@@ -165,17 +172,18 @@ function collectOption(value: string, previous: string[]): string[] {
   return [...previous, value];
 }
 
-function parsePositiveInteger(value: string, optionName: string): number {
-  const parsed = Number(value);
-  if (!Number.isSafeInteger(parsed) || parsed < 1) {
-    throw new Error(`Invalid ${optionName} value: ${value}. Use a positive integer.`);
-  }
-
-  return parsed;
-}
-
-function evaluateGates(report: ScanReport, failBelow?: number, failOn?: Severity): string[] {
+function evaluateGates(report: ScanReport, failBelow?: number, failOn?: Severity, maxTokens?: number): string[] {
   const failures: string[] = [];
+
+  if (maxTokens !== undefined) {
+    const overBudget = report.reports.filter((skill) => skill.metrics.estimatedActivationTokens > maxTokens);
+    if (overBudget.length > 0) {
+      const highest = Math.max(...overBudget.map((skill) => skill.metrics.estimatedActivationTokens));
+      failures.push(
+        `SkillPreflight gate failed: ${overBudget.length} skill(s) exceeded the ${maxTokens} estimated activation token budget; maximum was ${highest}.`
+      );
+    }
+  }
 
   if (failBelow !== undefined) {
     const belowThreshold = report.reports.filter((skill) => skill.score < failBelow);

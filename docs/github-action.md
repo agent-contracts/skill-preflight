@@ -105,6 +105,21 @@ For small overrides, `exclude` and `ignore-rules` accept newline-separated value
 
 See `docs/policy.md` for precedence and suppression visibility.
 
+## Instruction Token Budget
+
+```yaml
+- uses: agent-contracts/skill-preflight@v1
+  with:
+    target: "."
+    max-tokens: "2000"
+    format: json
+    out: reports/scan.json
+```
+
+`max-tokens` limits estimated activation tokens per skill, not actual model usage. If omitted, a policy's `maxTokens` is used; without either, there is no token budget gate. An explicit input overrides the policy. Budget checks cover all scanned skills even in summary mode; reports are saved before failure.
+
+This input requires npm package version 0.10.0 or newer. If using `package-version`, update that pin when enabling the budget.
+
 ## Notes
 
 The composite action runs the published npm package with `npx`.

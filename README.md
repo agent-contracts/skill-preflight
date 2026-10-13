@@ -38,6 +38,12 @@ Run without installing:
 npx skill-preflight scan ./my-skill
 ```
 
+You can also pass a local `SKILL.md` file. Its containing directory (including supporting files and nested skills) is scanned, just like a directory target:
+
+```bash
+npx skill-preflight scan ./my-skill/SKILL.md
+```
+
 Scan a GitHub repository before installing it:
 
 ```bash
@@ -121,6 +127,7 @@ Options:
 --out <file>            Write report to a file.
 --fail-below <score>    Exit with code 1 if any scanned skill is below this score.
 --fail-on <severity>    Exit for findings at or above info, low, medium, high, or critical.
+--max-tokens <count>    Exit if any skill exceeds this estimated activation token budget.
 --config <file>         Load an explicit JSON policy file.
 --exclude <glob>        Exclude a target-relative path glob. Repeat as needed.
 --ignore-rule <id>      Suppress a rule ID or wildcard pattern. Repeat as needed.
@@ -133,6 +140,14 @@ Summary mode supports text, JSON, Markdown, and HTML output. SARIF always contai
 
 `--out` automatically creates missing parent directories for reports and badge JSON, including paths with spaces. Reports are saved before score or severity gates return a failing exit code.
 
+Set a per-skill instruction budget independently of the score:
+
+```bash
+npx skill-preflight scan ./my-skill --max-tokens 2000 --format json --out reports/scan.json
+```
+
+`--max-tokens` is an optional positive integer limit. The gate checks every scanned skill, even with `--summary --top`, and cannot be bypassed by `--ignore-rule`. Exactly matching the budget passes. Reports are saved before a budget failure returns exit code 1. The estimate covers `SKILL.md` activation instructions, not runtime token usage, referenced-file loading, or API billing.
+
 ## Policy and CI Gates
 
 Use an explicit JSON policy to keep generated files and reviewed false positives out of a scan:
@@ -142,7 +157,8 @@ Use an explicit JSON policy to keep generated files and reviewed false positives
   "exclude": ["fixtures/**", "vendor/**"],
   "ignoreRules": ["compatibility.os-specific-command"],
   "failBelow": 70,
-  "failOn": "high"
+  "failOn": "high",
+  "maxTokens": 2000
 }
 ```
 
@@ -151,6 +167,8 @@ skill-preflight scan . --config skill-preflight.json
 ```
 
 Config files are never loaded from a scanned repository automatically. This prevents an untrusted remote skill from suppressing its own findings. CLI exclusions and ignored rules are merged with the config; CLI score and severity gates take precedence.
+
+CLI `--max-tokens` overrides policy `maxTokens`. UTF-8 policy files with or without a BOM are supported. Policy `failBelow` and `maxTokens` must be JSON numbers, not strings, booleans, or null.
 
 Suppressed findings remain counted in the report so policy decisions are visible. See `docs/policy.md` for glob behavior and CI examples.
 
