@@ -95,6 +95,11 @@ export async function scanSkillRoot(
     exclude: options.exclude
   });
   const skillFile = textFiles.find((file) => file.path.toLowerCase() === "skill.md");
+  if (!skillFile) {
+    throw new Error(
+      `SKILL.md could not be analyzed under ${rootPath}. Ensure the entrypoint exists, is readable text within the 1 MiB limit, and is not excluded. No score or token estimate can be produced.`
+    );
+  }
   const context: SkillContext = {
     rootPath,
     skillName: deriveSkillName(rootPath, skillFile?.content),
