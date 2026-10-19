@@ -75,6 +75,45 @@ async function mockGitHubDownloads(t, { failedPath, truncated = false, archiveTo
 }
 
 describe("SkillPreflight scanner", () => {
+  for (const [label, content] of [
+    ["oversized", Buffer.alloc(1024 * 1024 + 1, 65)],
+    ["non-text", Buffer.from([0, 1, 2, 3])]
+  ]) {
+    it(`rejects a local ${label} SKILL.md instead of scoring unread instructions`, async (t) => {
+      const root = await mkdtemp(path.join(os.tmpdir(), "skill-preflight-entrypoint-"));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      await writeFile(path.join(root, "SKILL.md"), content);
+      await assert.rejects(scan({ target: root }), /SKILL\.md could not be analyzed/);
+    });
+  }
+
+  it("does not save a successful report or badge for unreadable entrypoint content", async (t) => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "skill-preflight-entrypoint-cli-"));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const entrypoint = path.join(root, "SKILL.md");
+    await writeFile(entrypoint, Buffer.alloc(1024 * 1024 + 1, 65));
+    for (const command of ["scan", "badge"]) {
+      const outputPath = path.join(root, `${command}.json`);
+      const args = ["dist/index.js", command, entrypoint, "--out", outputPath, "--ignore-rule", "*"];
+      if (command === "scan") args.push("--max-tokens", "1", "--format", "json");
+      await assert.rejects(execFileAsync(process.execPath, args, { cwd: projectRoot }), (error) => {
+        assert.equal(error.code, 1);
+        assert.match(error.stderr, /SKILL\.md could not be analyzed/);
+        assert.doesNotMatch(error.stdout, /Wrote/);
+        return true;
+      });
+      await assert.rejects(readFile(outputPath), { code: "ENOENT" });
+    }
+  });
+
+  it("rejects a missing or excluded entrypoint in direct root scans", async (t) => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "skill-preflight-entrypoint-api-"));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    await assert.rejects(scanSkillRoot(root, "missing"), /SKILL\.md could not be analyzed/);
+    await writeFile(path.join(root, "SKILL.md"), "Review text only.\n");
+    await assert.rejects(scanSkillRoot(root, "excluded", { exclude: ["SKILL.md"] }), /SKILL\.md could not be analyzed/);
+  });
+
   it("scans a local SKILL.md path and its supporting files", async () => {
     const report = await scan({ target: path.join(projectRoot, "examples", "risky-skill", "SKILL.md") });
     assert.equal(report.summary.count, 1);
