@@ -837,7 +837,7 @@ function isMcpConfigFile(file: TextFile): boolean {
 
 function parseJsonObject(file: TextFile): Record<string, unknown> | undefined {
   try {
-    const parsed: unknown = JSON.parse(file.content);
+    const parsed: unknown = JSON.parse(file.content.replace(/^\uFEFF/, ""));
     return isRecord(parsed) ? parsed : undefined;
   } catch {
     return undefined;

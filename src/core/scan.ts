@@ -131,6 +131,9 @@ export async function scanSkillRoot(
 }
 
 async function resolveScanTargets(options: ScanOptions): Promise<string[]> {
+  if (options.installed && options.target !== undefined) {
+    throw new Error("Cannot combine --installed with a target. Choose installed discovery or an explicit path/URL.");
+  }
   if (options.installed) {
     const installedDirs = commonInstalledSkillDirs();
     const existingDirs: string[] = [];
