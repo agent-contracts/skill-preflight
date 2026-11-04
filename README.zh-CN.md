@@ -112,6 +112,8 @@ npx skills add agent-contracts/skill-preflight --skill skill-preflight
 
 ## 评分模型
 
+兼容性说明：`--installed` 不能与指定路径或 URL 同时使用，避免目标被悄悄忽略。配套 `package.json` 和 MCP JSON 即使带有 UTF-8 BOM，也会进行结构化风险检查，并保留原始证据。
+
 SkillPreflight 使用 100 分评分模型：
 
 | 维度 | 分值 | 检查内容 |
